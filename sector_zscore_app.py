@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
@@ -21,12 +23,42 @@ _NANUM_CANDIDATES = [
     "/usr/share/fonts/nanum/NanumGothic.ttf",
 ]
 
+_FALLBACK_FONT_URL = (
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanskr/"
+    "NotoSansKR%5Bwght%5D.ttf"
+)
+
+
+def ensure_fallback_korean_font() -> Path | None:
+    """다운로드 가능한 한글 폰트를 로컬 캐시에 저장해 fallback으로 사용한다."""
+    font_dir = Path(__file__).parent / ".streamlit" / "fonts"
+    target = font_dir / "NotoSansKR[wght].ttf"
+
+    if target.exists() and target.stat().st_size > 0:
+        return target
+
+    try:
+        font_dir.mkdir(parents=True, exist_ok=True)
+        with urlopen(_FALLBACK_FONT_URL, timeout=10) as response:
+            data = response.read()
+        if not data:
+            return None
+        target.write_bytes(data)
+        return target
+    except (OSError, URLError, TimeoutError, ValueError):
+        return None
+
 
 def setup_korean_font() -> None:
     global FONT_PROP
 
+    candidates = list(_NANUM_CANDIDATES)
+    downloaded_font = ensure_fallback_korean_font()
+    if downloaded_font is not None:
+        candidates.insert(0, str(downloaded_font))
+
     # 1) 파일 경로로 직접 등록 (Streamlit Cloud 환경에서 가장 확실한 방법)
-    for candidate in _NANUM_CANDIDATES:
+    for candidate in candidates:
         if Path(candidate).exists():
             fm.fontManager.addfont(candidate)
             FONT_PROP = fm.FontProperties(fname=candidate)
