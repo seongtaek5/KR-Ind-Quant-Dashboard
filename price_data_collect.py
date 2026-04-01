@@ -8,6 +8,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 from pykrx import stock
 
+try:
+    from pykrx.website.krx.etx.core import ETF_전종목기본종목
+except Exception:  # pragma: no cover
+    ETF_전종목기본종목 = None
+
 SECTOR_OUTPUT_CSV = "kodex_sector_etf_close.csv"
 KOSPI_OUTPUT_CSV = "kospi_daily.csv"
 
@@ -43,6 +48,11 @@ def _resolve_today() -> str:
     return datetime.today().strftime("%Y%m%d")
 
 
+def _strict_mode() -> bool:
+    value = os.getenv("KRX_STRICT", "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
 def _compute_fetch_start(existing_csv: str, date_col: str, default_start: str) -> str:
     if not os.path.exists(existing_csv):
         return default_start
@@ -71,9 +81,85 @@ def _choose_best_ticker(candidates: list[tuple[str, str]], preferred_keywords: l
     return candidates_sorted[0][0]
 
 
+def _recent_dates(asof: str, days: int = 14) -> list[str]:
+    base = datetime.strptime(asof, "%Y%m%d")
+    return [(base - timedelta(days=i)).strftime("%Y%m%d") for i in range(days + 1)]
+
+
+def _normalize_krx_date(value: object) -> str:
+    text = str(value or "")
+    return "".join(ch for ch in text if ch.isdigit())
+
+
+def _extract_etf_pairs_from_core(asof: str) -> list[tuple[str, str]]:
+    if ETF_전종목기본종목 is None:
+        return []
+
+    df = ETF_전종목기본종목().fetch()
+    if df is None or df.empty:
+        return []
+
+    ticker_col = next((c for c in ["ISU_SRT_CD", "short_code", "ticker"] if c in df.columns), None)
+    name_col = next((c for c in ["ISU_ABBRV", "codeName", "종목명"] if c in df.columns), None)
+    list_col = next((c for c in ["LIST_DD", "상장일"] if c in df.columns), None)
+
+    if not ticker_col or not name_col:
+        return []
+
+    out: list[tuple[str, str]] = []
+    for _, row in df.iterrows():
+        ticker = str(row.get(ticker_col, "")).strip()
+        if not ticker:
+            continue
+
+        if list_col:
+            listed = _normalize_krx_date(row.get(list_col))
+            if listed and listed > asof:
+                continue
+
+        name = str(row.get(name_col, "")).strip()
+        if name:
+            out.append((ticker, name))
+    return out
+
+
 def build_sector_ticker_map(asof: str) -> dict[str, str]:
-    tickers = stock.get_etf_ticker_list(asof)
-    ticker_name_pairs = [(ticker, stock.get_etf_ticker_name(ticker)) for ticker in tickers]
+    ticker_name_pairs: list[tuple[str, str]] = []
+    last_error: Exception | None = None
+
+    try:
+        ticker_name_pairs = _extract_etf_pairs_from_core(asof)
+    except Exception as exc:
+        last_error = exc
+
+    # 폴백: core 조회가 실패하면 기존 stock API를 최근 날짜로 재시도한다.
+    if not ticker_name_pairs:
+        for try_date in _recent_dates(asof, days=14):
+            try:
+                tickers = stock.get_etf_ticker_list(try_date)
+                if not tickers:
+                    continue
+
+                pairs: list[tuple[str, str]] = []
+                for ticker in tickers:
+                    try:
+                        name = stock.get_etf_ticker_name(ticker)
+                    except Exception:
+                        continue
+                    if name:
+                        pairs.append((ticker, name))
+
+                if pairs:
+                    ticker_name_pairs = pairs
+                    break
+            except Exception as exc:
+                last_error = exc
+                continue
+
+    if not ticker_name_pairs:
+        if last_error is not None:
+            raise RuntimeError(f"ETF 티커 목록 조회 실패(최근 14일 재시도): {last_error}") from last_error
+        raise RuntimeError("ETF 티커 목록 조회 실패: 최근 14일 데이터가 비어 있습니다.")
 
     sector_map: dict[str, str] = {}
     for sector, keywords in SECTOR_KEYWORDS.items():
@@ -92,7 +178,17 @@ def build_sector_ticker_map(asof: str) -> dict[str, str]:
 
 
 def collect_sector_close(fromdate: str, todate: str) -> pd.DataFrame:
-    ticker_map = build_sector_ticker_map(todate)
+    try:
+        ticker_map = build_sector_ticker_map(todate)
+    except Exception as exc:
+        if os.path.exists(SECTOR_OUTPUT_CSV):
+            if _strict_mode():
+                raise RuntimeError(f"[ETF] strict 모드: 티커 조회 실패 ({exc})") from exc
+            print(f"[ETF] 경고: 티커 조회 실패로 기존 파일 유지 ({exc})")
+            existing = pd.read_csv(SECTOR_OUTPUT_CSV)
+            return existing
+        raise
+
     if not ticker_map:
         raise RuntimeError("KODEX 섹터 ETF 티커를 찾지 못했습니다.")
 
@@ -136,8 +232,24 @@ def collect_sector_close(fromdate: str, todate: str) -> pd.DataFrame:
 
 def collect_kospi_ohlcv(fromdate: str, todate: str) -> pd.DataFrame:
     # 코스피 지수 코드: 1001
-    df = stock.get_index_ohlcv_by_date(fromdate, todate, "1001")
+    try:
+        df = stock.get_index_ohlcv_by_date(fromdate, todate, "1001", name_display=False)
+    except Exception as exc:
+        if os.path.exists(KOSPI_OUTPUT_CSV):
+            if _strict_mode():
+                raise RuntimeError(f"[KOSPI] strict 모드: 지수 조회 실패 ({exc})") from exc
+            print(f"[KOSPI] 경고: 지수 조회 실패로 기존 파일 유지 ({exc})")
+            existing = pd.read_csv(KOSPI_OUTPUT_CSV)
+            return existing
+        raise
+
     if df.empty:
+        if os.path.exists(KOSPI_OUTPUT_CSV):
+            if _strict_mode():
+                raise RuntimeError("[KOSPI] strict 모드: 수신 데이터가 비어 있습니다.")
+            print("[KOSPI] 경고: 수신 데이터가 비어 기존 파일 유지")
+            existing = pd.read_csv(KOSPI_OUTPUT_CSV)
+            return existing
         raise RuntimeError("코스피 지수 데이터를 수집하지 못했습니다.")
 
     out = df.rename(

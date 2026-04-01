@@ -36,12 +36,14 @@ jobs:
       - name: Collect ETF/KOSPI data
         env:
           KRX_TODAY: ${{ inputs.yyyymmdd }}
+          KRX_STRICT: "1"
         run: python price_data_collect.py
 
       - name: Collect sector PBR data
         env:
           KRX_COOKIE: ${{ inputs.krx_cookie }}
           KRX_TODAY: ${{ inputs.yyyymmdd }}
+          KRX_STRICT: "1"
         run: python krx_pbr_pipeline.py
 
       - name: Commit and push if changed

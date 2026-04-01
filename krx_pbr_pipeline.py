@@ -230,6 +230,14 @@ def fetch_pbr_range(
             print(f"\n  CSV 저장 완료: {OUTPUT_CSV}")
             print(f"  다음 실행 시 이 날짜({date})부터 자동으로 이어받습니다.")
             print("\n  [할 일] KRX에서 재로그인 → 새 쿠키 복사 → 스크립트 재실행")
+
+            # CI/비대화형 또는 strict 모드에서는 실패로 처리해
+            # 데이터 미수집 상태를 성공으로 오인하지 않게 한다.
+            strict = os.getenv("KRX_STRICT", "").strip() == "1"
+            if strict or (not sys.stdin.isatty()):
+                print("  [오류] 세션 만료로 수집이 중단되었습니다. 종료코드 1로 종료합니다.")
+                sys.exit(1)
+
             sys.exit(0)
 
         except KeyboardInterrupt:
