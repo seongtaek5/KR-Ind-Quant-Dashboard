@@ -39,3 +39,22 @@ python krx_pbr_pipeline.py
 # 대시보드
 streamlit run sector_zscore_app.py
 ```
+
+## 로컬 수동 실행 후 main 자동 반영
+
+VS Code 터미널에서 아래처럼 실행하면 데이터 수집부터 CSV 3개 커밋/푸시까지 한 번에 처리됩니다.
+
+```bash
+export KRX_COOKIE='여기에 KRX Cookie 전체'
+bash run_local_update_and_push.sh
+```
+
+동작 순서:
+
+1. `origin/main` 최신 반영 (`git pull --rebase origin main`)
+2. `price_data_collect.py` 실행
+3. `krx_pbr_pipeline.py` 실행
+4. CSV 3개만 커밋
+5. `main` 브랜치로 푸시
+
+원하면 VS Code에서 `Run Task` -> `Update CSV and Push Main`으로 실행할 수 있습니다.
