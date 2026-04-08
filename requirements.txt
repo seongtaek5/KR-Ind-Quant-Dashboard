@@ -4,3 +4,4 @@ requests>=2.31.0
 streamlit>=1.30.0
 matplotlib>=3.7.0
 seaborn>=0.13.0
+plotly>=5.15.0
